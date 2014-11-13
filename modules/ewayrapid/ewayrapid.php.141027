@@ -1,0 +1,475 @@
+<?php
+/**
+ * eWAY Prestashop Payment Module
+ *
+ * @version   3.1.4
+ * @author    eWAY www.eway.com.au
+ * @copyright (c) 2014, Web Active Corporation Pty Ltd
+ * @license   http://opensource.org/licenses/MIT MIT
+ */
+
+if (!defined('_PS_VERSION_'))
+	exit;
+
+class Ewayrapid extends PaymentModule
+{
+	public function __construct()
+	{
+		$this->name = 'ewayrapid';
+		$this->tab = 'payments_gateways';
+		$this->version = '3.1.4';
+		$this->author = 'eWAY';
+
+		parent::__construct();
+
+		$this->page = basename(__FILE__, '.php');
+		$this->displayName = $this->l('Eway Payments');
+		$this->description = $this->l('Accepts payments with eWAY.');
+		$this->confirmUninstall = $this->l('Are you sure you want to delete your details ?');
+
+		$this->currencies = true;
+		$this->currencies_mode = 'radio';
+
+		/* Backward compatibility */
+		if (_PS_VERSION_ < '1.5')
+           require(_PS_MODULE_DIR_.$this->name.'/backward_compatibility/backward.php');
+
+		if (self::isInstalled($this->name))
+		{
+			if (version_compare(_PS_VERSION_, '1.5', '<'))
+				$this->backwardCompatibilityChecks();
+		}
+	}
+
+	public function install()
+	{
+		/* The cURL PHP extension must be enabled to use this module */
+		if (!function_exists('curl_version'))
+		{
+			$this->_errors[] = $this->l('Sorry, this module requires the cURL PHP '
+					.'Extension (http://www.php.net/curl), which is not enabled '
+					.'on your server. Please ask your hosting provider for '
+					.'assistance.');
+			return false;
+		}
+
+		if (_PS_VERSION_ < '1.5' && !Module::isInstalled('backwardcompatibility'))
+		{
+			$this->_errors[] = $this->l('This module requires the backward compatibility module enabled');
+			return false;
+		}
+
+		if (!parent::install()
+				|| ! Configuration::updateValue('EWAYRAPID_USERNAME', '')
+				|| ! Configuration::updateValue('EWAYRAPID_PASSWORD', '')
+				|| ! Configuration::updateValue('EWAYRAPID_SANDBOX', 1)
+				|| ! Configuration::updateValue('EWAYRAPID_PAYMENTTYPE', 'visa,mastercard')
+				|| ! $this->registerHook('payment')
+				|| ! $this->registerHook('paymentReturn')
+				|| ! $this->registerHook('backOfficeHeader'))
+			return false;
+		return true;
+	}
+
+	public function uninstall()
+	{
+		if (!Configuration::deleteByName('EWAYRAPID_USERNAME')
+				|| ! Configuration::deleteByName('EWAYRAPID_PASSWORD')
+				|| ! Configuration::deleteByName('EWAYRAPID_SANDBOX')
+				|| ! Configuration::deleteByName('EWAYRAPID_PAYMENTTYPE')
+				|| ! parent::uninstall())
+			return false;
+		return true;
+	}
+
+	public function hookBackOfficeHeader()
+	{
+		$this->context->controller->addCSS($this->_path.'css/eway.css');
+	}
+
+	public function getContent()
+	{
+		$this->postProcess();
+
+		$this->context->smarty->assign(array (
+			'sandbox' => Configuration::get('EWAYRAPID_SANDBOX'),
+			'username' => Configuration::get('EWAYRAPID_USERNAME'),
+			'password' => Configuration::get('EWAYRAPID_PASSWORD'),
+			'paymenttype' => explode(',', Configuration::get('EWAYRAPID_PAYMENTTYPE')),
+		));
+		return $this->display(__FILE__, 'views/templates/admin/back_office.tpl');
+	}
+
+	private function postProcess()
+	{
+		if (Tools::isSubmit('submitRapideWAY'))
+		{
+			$post_errors = array();
+
+			if (!Tools::getValue('username'))
+				$post_errors[] = $this->l('eWAY API Key cannot be empty');
+
+			if (!Tools::getValue('password'))
+				$post_errors[] = $this->l('eWAY API Password cannot be empty');
+
+			if (!Tools::getValue('paymenttype'))
+				$post_errors[] = $this->l('You need to accept at least 1 payment type');
+
+			if (empty($post_errors))
+			{
+				Configuration::updateValue('EWAYRAPID_SANDBOX', (int)Tools::getValue('sandbox'));
+				Configuration::updateValue('EWAYRAPID_USERNAME', trim(Tools::getValue('username')));
+				Configuration::updateValue('EWAYRAPID_PASSWORD', trim(Tools::getValue('password')));
+				Configuration::updateValue('EWAYRAPID_PAYMENTTYPE', implode(',', Tools::getValue('paymenttype')));
+
+				$this->context->smarty->assign('eWAY_save_success', true);
+				Logger::addLog('eWAY configuration updated', 1, null);
+			}
+			else
+			{
+				$this->context->smarty->assign('eWAY_save_fail', true);
+				$this->context->smarty->assign('eWAY_errors', $post_errors);
+			}
+		}
+	}
+
+	public function hookPayment($params)
+	{
+		if (!$this->active)
+			return;
+
+		$sandbox = Configuration::get('EWAYRAPID_SANDBOX');
+		$username = Configuration::get('EWAYRAPID_USERNAME');
+		$password = Configuration::get('EWAYRAPID_PASSWORD');
+		$paymenttype = explode(',', Configuration::get('EWAYRAPID_PAYMENTTYPE'));
+		if (count($paymenttype) == 0)
+			$paymenttype = array('visa', 'mastercard');
+
+		if (empty($username) || empty($password))
+			return;
+
+		$is_failed = Tools::getValue('ewayerror');
+
+		/* Load objects */
+		$address = new Address((int)$params['cart']->id_address_invoice);
+		$shipping_address = new Address((int)$params['cart']->id_address_delivery);
+		$customer = new Customer((int)$params['cart']->id_customer);
+		$currency = new Currency((int)$params['cart']->id_currency);
+
+		$total_amount = number_format($params['cart']->getOrderTotal(), 2, '.', '') * 100;
+		$redirect_url = (Configuration::get('PS_SSL_ENABLED') ? 'https' : 'http')
+			.'://'.$_SERVER['HTTP_HOST'].__PS_BASE_URI__.'modules/'.$this->name.'/eway.php';
+
+		include_once(_PS_MODULE_DIR_.'/ewayrapid/lib/eWAY/RapidAPI.php');
+
+		// Create Responsive Shared Page Request Object
+		$request = new EwayCreateAccessCodeRequest();
+
+		$country_obj = new Country((int)$address->id_country, Configuration::get('PS_LANG_DEFAULT'));
+		$state = '';
+		if ($address->id_state)
+		{
+			$state = new State((int)$address->id_state);
+			$state = $state->iso_code;
+		}
+
+		$request->Customer->FirstName = (string)$address->firstname;
+		$request->Customer->LastName = (string)$address->lastname;
+		$request->Customer->CompanyName = '';
+		$request->Customer->JobDescription = '';
+		$request->Customer->Street1 = (string)$address->address1;
+		$request->Customer->Street2 = (string)$address->address2;
+		$request->Customer->City = (string)$address->city;
+		$request->Customer->State = (string)$state;
+		$request->Customer->PostalCode = (string)$address->postcode;
+		$request->Customer->Country = Tools::strtolower((string)$country_obj->iso_code);
+		$request->Customer->Email = $customer->email;
+		$request->Customer->Phone = $address->phone;
+		$request->Customer->Mobile = $address->phone_mobile;
+
+		// require field
+		$country_obj = new Country(
+				(int)$shipping_address->id_country,
+				Configuration::get('PS_LANG_DEFAULT')
+		);
+		$state = '';
+		if ($address->id_state)
+		{
+			$state = new State((int)$shipping_address->id_state);
+			$state = $state->iso_code;
+		}
+		$request->ShippingAddress->FirstName = (string)$shipping_address->firstname;
+		$request->ShippingAddress->LastName = (string)$shipping_address->lastname;
+		$request->ShippingAddress->Street1 = (string)$shipping_address->address1;
+		$request->ShippingAddress->Street2 = (string)$shipping_address->address2;
+		$request->ShippingAddress->City = (string)$shipping_address->city;
+		$request->ShippingAddress->State = (string)$state;
+		$request->ShippingAddress->PostalCode = (string)$shipping_address->postcode;
+		$request->ShippingAddress->Country = Tools::strtolower((string)$country_obj->iso_code);
+		$request->ShippingAddress->Email = $customer->email;
+		$request->ShippingAddress->Phone = $shipping_address->phone;
+		$request->ShippingAddress->ShippingMethod = 'Unknown';
+
+		$total = 0;
+		$invoice_desc = '';
+		$products = $params['cart']->getProducts();
+		foreach ($products as $product)
+		{
+			$item = new EwayLineItem();
+			$item->SKU = Tools::substr($product['id_product'], 0, 12);
+			$item->Description = Tools::substr($product['name'], 0, 26);
+			$item->Quantity = $product['cart_quantity'];
+			$item->UnitCost = number_format($product['price_wt'], 2, '.', '') * 100;
+			if (isset($product['ecotax']))
+				$item->Tax = number_format($product['ecotax'], 2, '.', '') * 100;
+			$item->Total = number_format($product['total_wt'], 2, '.', '') * 100;
+			$request->Items->LineItem[] = $item;
+			$invoice_desc .= $product['name'].', ';
+			$total = $total + $item->Total;
+		}
+
+		$invoice_desc = Tools::substr($invoice_desc, 0, -2);
+		if (Tools::strlen($invoice_desc) > 64)
+			$invoice_desc = Tools::substr($invoice_desc, 0, 61).'...';
+
+		// If totals don't match add shipping item
+		if ($total != $total_amount)
+		{
+			$carrier = new Carrier($this->context->cart->id_carrier);
+			if (version_compare(_PS_VERSION_, '1.5', '<'))
+			{
+				$shipping_cost_wt = $this->context->cart->getOrderShippingCost();
+				$id = $this->context->cart->id_carrier;
+			}
+			else
+			{
+				$shipping_cost_wt = $this->context->cart->getTotalShippingCost();
+				$id = $carrier->id_reference;
+			}
+			$item = new EwayLineItem();
+			$item->SKU = $id;
+			$item->Description = $carrier->name;
+			$item->Quantity = 1;
+			$item->UnitCost = number_format($shipping_cost_wt, 2, '.', '') * 100;
+			$item->Total = number_format($shipping_cost_wt, 2, '.', '') * 100;
+			$request->Items->LineItem[] = $item;
+		}
+
+		if ($currency->iso_code != 'NZD') {
+			$card_amount = Tools::ps_round($total_amount / $currency->conversion_rate, 0);
+			//echo 'card>>>'.$card_amount.','.$currency->iso_code.','.$total_amount;
+		} else {
+			$card_amount = $total_amount;
+			//echo 'NZD';
+		}
+
+		$opt1 = new EwayOption();
+		$opt1->Value = (int)$params['cart']->id.'_'.date('YmdHis').'_'.$params['cart']->secure_key;
+		$request->Options->Option[0] = $opt1;
+
+		$request->Payment->TotalAmount = $card_amount; //$total_amount;
+		$request->Payment->InvoiceNumber = (int)$params['cart']->id;
+		$request->Payment->InvoiceDescription = $invoice_desc;
+		$request->Payment->InvoiceReference = '';
+		$request->Payment->CurrencyCode = 'NZD'; //$currency->iso_code;
+		
+		$request->RedirectUrl = $redirect_url;
+		$request->Method = 'ProcessPayment';
+		$request->TransactionType = 'Purchase';
+		$request->DeviceID = 'prestashop-'._PS_VERSION_.' transparent-3.1.4';
+		$request->CustomerIP = Tools::getRemoteAddr();
+
+		// Call RapidAPI
+		
+		$eway_params = array();
+		if ($sandbox)
+			$eway_params['sandbox'] = true;
+		$service = new EwayRapidAPI($username, $password, $eway_params);
+		$result = $service->createAccessCode($request);
+
+/*
+		// Check if any error returns
+		if (isset($result->Errors))
+		{
+			// Get Error Messages from Error Code. Error Code Mappings are in the Config.ini file
+			$error_array = explode(',', $result->Errors);
+			$lbl_error = '';
+			foreach ($error_array as $error)
+			{
+				$error = $service->getMessage($error);
+				$lbl_error .= $error.'<br />';
+			}
+
+			$this->response['Response Reason Text'] = $lbl_error;
+			$msg = 'eWAY error (get access code): '.$lbl_error;
+			Logger::addLog($msg, 4, null, null, (int)$params['cart']->id);
+			return '<p style="color: red;">'.$lbl_error.'</p>';
+		}
+*/		
+
+		$smarty = $this->context->smarty;
+		$smarty->assign(array(
+			'AccessCode' => $result->AccessCode,
+			'gateway_url' => $result->FormActionURL,
+			'payment_type' => $paymenttype,
+			'isFailed' => $is_failed,
+			'Amount' => $card_amount
+		));
+
+		return $this->display(__FILE__, 'views/templates/hook/hook_payment.tpl');
+	}
+
+	public function hookPaymentReturn()
+	{
+		if (!$this->active)
+			return null;
+
+		return $this->display(__FILE__, 'views/templates/hook/confirmation.tpl');
+	}
+
+	public function getAccessCodeResult()
+	{
+		if (!$_REQUEST['AccessCode'])
+		{
+			Tools::redirect('order.php');
+			return false;
+		}
+
+		include_once(_PS_MODULE_DIR_.'/ewayrapid/lib/eWAY/RapidAPI.php');
+
+		$sandbox = Configuration::get('EWAYRAPID_SANDBOX');
+		$username = Configuration::get('EWAYRAPID_USERNAME');
+		$password = Configuration::get('EWAYRAPID_PASSWORD');
+
+		// Call RapidAPI
+		$eway_params = array();
+		if ($sandbox)
+			$eway_params['sandbox'] = true;
+		$service = new EwayRapidAPI($username, $password, $eway_params);
+
+		$result = $service->getAccessCodeResult($_REQUEST['AccessCode']);
+
+		$is_error = false;
+		// Check if any error returns
+		if (isset($result->Errors))
+		{
+			$error_array = explode(',', $result->Errors);
+			$lbl_error = '';
+			$is_error = true;
+			foreach ($error_array as $error)
+			{
+				$error = $service->getMessage($error);
+				$lbl_error .= $error.', ';
+			}
+			$msg = 'eWAY error (get result): '.$lbl_error;
+			Logger::addLog($msg, 4);
+		}
+
+		if (!$is_error)
+		{
+			if (!$result->TransactionStatus)
+			{
+				$error_array = explode(',', $result->ResponseMessage);
+				$lbl_error = '';
+				$admin_error = '';
+				$is_error = true;
+				foreach ($error_array as $error)
+				{
+					$error = trim($error);
+					$error_msg = $service->getMessage($error);
+					if (stripos($error, 'F') === false)
+						$lbl_error .= $error_msg.', ';
+
+					$admin_error .= "($error) $error_msg, ";
+
+				}
+				$lbl_error = Tools::substr($lbl_error, 0, -2);
+				$admin_error = Tools::substr($admin_error, 0, -2);
+				$msg = 'eWAY payment failed (get result): '.$admin_error;
+				Logger::addLog($msg, 2);
+			}
+		}
+
+		// If error, send user back to order page
+		if ($is_error)
+		{
+			$checkout_type = Configuration::get('PS_ORDER_PROCESS_TYPE') ?
+					'order-opc' : 'order';
+
+			$url = _PS_VERSION_ >= '1.5' ?
+					'index.php?controller='.$checkout_type.'&' : $checkout_type.'.php?';
+
+			$url .= 'step=3&cgv=1&ewayerror=1&message='.$lbl_error;
+
+			if (Configuration::get('PS_ORDER_PROCESS_TYPE') == 'order-opc')
+				$url.'#eway';
+
+			Tools::redirect($url);
+			exit;
+		}
+
+		$option1 = $result->Options[0]->Value;
+		$id_cart = (int)Tools::substr($option1, 0, strpos($option1, '_'));
+		if (_PS_VERSION_ >= 1.5)
+			Context::getContext()->cart = new Cart((int)$id_cart);
+		$cart = Context::getContext()->cart;
+		$secure_cart = explode('_', $option1);
+
+		if (!Validate::isLoadedObject($cart))
+		{
+			Logger::addLog('Cart loading failed for cart '.$secure_cart, 4);
+			die('An unrecoverable error occured with the cart ');
+		}
+
+		$customer = new Customer((int)$cart->id_customer);
+
+		if (!Validate::isLoadedObject($customer))
+		{
+			Logger::addLog('Issue loading customer');
+			die('An unrecoverable error occured while retrieving your data');
+		}
+
+		$extra_vars = array();
+		$extra_vars['transaction_id'] = $result->TransactionID;
+		
+		/* jabez insert */
+		$currency = new Currency((int)$cart->id_currency);
+		//echo 'conform>>>'.$order_total.','.$currency->iso_code.','.$currency->conversion_rate;
+		if ($currency->iso_code != 'NZD') {
+			$order_total = (float)($result->TotalAmount * $currency->conversion_rate/100);
+		} else {
+			$order_total = (float)($result->TotalAmount / 100);
+		}
+		$this->validateOrder($cart->id,
+				Configuration::get('PS_OS_PAYMENT'),
+				$order_total,
+				$this->displayName,
+				$this->l('eWAY Transaction ID: ').$result->TransactionID,
+				$extra_vars,
+				null,
+				false,
+				$customer->secure_key
+		);
+
+		$confirmurl = 'index.php?controller=order-confirmation&';
+
+		if (_PS_VERSION_ < '1.5')
+			$confirmurl = 'order-confirmation.php?';
+		Tools::redirect($confirmurl.'id_module='.(int)$this->id.'&id_cart='.
+				(int)$cart->id.'&key='.$customer->secure_key);
+	}
+
+	/* Check status of backward compatibility module*/
+	protected function backwardCompatibilityChecks()
+	{
+		if (Module::isInstalled('backwardcompatibility'))
+		{
+			$backward_module = Module::getInstanceByName('backwardcompatibility');
+			if (!$backward_module->active)
+				$this->warning .= $this->l('To work properly the module requires the backward compatibility module enabled').'<br />';
+		}
+		else
+			$this->warning .= $this->l('In order to use the module you need to install the backward compatibility.').'<br />';
+	}
+
+}

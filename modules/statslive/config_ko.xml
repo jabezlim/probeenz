@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<module>
+	<name>statslive</name>
+	<displayName><![CDATA[온라인 방문자 수]]></displayName>
+	<version><![CDATA[1.2.1]]></version>
+	<description><![CDATA[대시보드에 현재 접속한 고객및 방문자 리스트 추가]]></description>
+	<author><![CDATA[PrestaShop]]></author>
+	<tab><![CDATA[analytics_stats]]></tab>
+	<is_configurable>0</is_configurable>
+	<need_instance>0</need_instance>
+	<limited_countries></limited_countries>
+</module>

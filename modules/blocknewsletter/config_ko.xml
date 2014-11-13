@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<module>
+	<name>blocknewsletter</name>
+	<displayName><![CDATA[뉴스레터 블럭]]></displayName>
+	<version><![CDATA[2.0]]></version>
+	<description><![CDATA[뉴스레터를 위한 회원가입 블록을 추가합니다.]]></description>
+	<author><![CDATA[PrestaShop]]></author>
+	<tab><![CDATA[front_office_features]]></tab>
+	<confirmUninstall><![CDATA[당신은 모든 연락처를 삭제하시겠습니까?]]></confirmUninstall>
+	<is_configurable>1</is_configurable>
+	<need_instance>0</need_instance>
+	<limited_countries></limited_countries>
+</module>

@@ -1,0 +1,19 @@
+<?php
+define('_DB_SERVER_', 'localhost');
+define('_DB_NAME_', 'prestashop');
+define('_DB_USER_', 'root');
+define('_DB_PASSWD_', 'julius68');//Julius@68');
+define('_DB_PREFIX_', 'ps_');
+define('_MYSQL_ENGINE_', 'MyISAM');
+define('_PS_CACHING_SYSTEM_', 'CacheMemcache');
+define('_PS_CACHE_ENABLED_', '0');
+define('_MEDIA_SERVER_1_', '');
+define('_MEDIA_SERVER_2_', '');
+define('_MEDIA_SERVER_3_', '');
+define('_COOKIE_KEY_', 'oICRn3KKokihEiJ4xTLJa2mVFkoRBnkbgQXts5xweSGK2hBFWaMTZNoE');
+define('_COOKIE_IV_', 'kWJ0FaN3');
+define('_PS_CREATION_DATE_', '2014-08-16');
+if (!defined('_PS_VERSION_'))
+	define('_PS_VERSION_', '1.6.0.9');
+define('_RIJNDAEL_KEY_', 'qyFdis9RKdbtEDeRdssgh7ogwGtHEfCE');
+define('_RIJNDAEL_IV_', 'ia08Wzk9GzYopOp42BUT1w==');

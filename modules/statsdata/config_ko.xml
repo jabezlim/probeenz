@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<module>
+	<name>statsdata</name>
+	<displayName><![CDATA[통계를 위한 데이터 마이닝]]></displayName>
+	<version><![CDATA[1.3]]></version>
+	<description><![CDATA[통계를 사용하려면 이 모듈을 사용하세요]]></description>
+	<author><![CDATA[PrestaShop]]></author>
+	<tab><![CDATA[analytics_stats]]></tab>
+	<is_configurable>1</is_configurable>
+	<need_instance>0</need_instance>
+	<limited_countries></limited_countries>
+</module>

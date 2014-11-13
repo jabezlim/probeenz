@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<module>
+	<name>bankwire</name>
+	<displayName><![CDATA[은행송금]]></displayName>
+	<version><![CDATA[1.0.0]]></version>
+	<description><![CDATA[입금이 확인되었습니다.]]></description>
+	<author><![CDATA[PrestaShop]]></author>
+	<tab><![CDATA[payments_gateways]]></tab>
+	<confirmUninstall><![CDATA[고객님의 세부 사항을 삭제하시겠습니까?]]></confirmUninstall>
+	<is_configurable>1</is_configurable>
+	<need_instance>1</need_instance>
+	<limited_countries></limited_countries>
+</module>
